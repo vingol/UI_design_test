@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="location">
+    <file>location_of_plants_in_jilin.png</file>
+  </qresource>
+</RCC>

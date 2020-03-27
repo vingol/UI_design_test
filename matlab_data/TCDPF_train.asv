@@ -1,0 +1,120 @@
+function [trainResult,Ch_trainResult] = TCDPF_train(Power,capp,maxcluster,lookback,time_train)
+%TCDPF_train: 动态划分预测的训练函数，需要输入外部数据（powermatrix）,聚类个数(maxcluster)
+%特征输入时延lookback
+%建议输入样本个数不超过2000，否则SVM小样本优势难以体现+容易出现过拟合
+%   此处显示详细说明
+
+tic
+farmsitting=1:size(Power,2);
+%farmsitting=[1,2,3,4,5,6,7,8,10];  %准备比较组合的风电场组合 %1,2,3,5,6,9,10；；1,2,3,4,6,9,10
+
+%% 循环前参数设置
+time=time_train;                    %时间参数
+%lookback=4;           %时间尺度，预测多少个点以后的值,实际上是一共有多少个输入
+trainNum1 = 1000;                    %576=24天*24小时
+data_M=length(time);             %数据量
+testNum1 = data_M-trainNum1;         %168=7天*24小时，测试集是总体样本减去训练集
+
+%maxcluster=5; %重新划分后子集群的个数
+Sample=Power(time,farmsitting);  %第一次输入的样本就是各个风电场的功率
+Z=zeros(length(farmsitting)-maxcluster,3);  %对应matlab的Link矩阵
+for i=1:length(farmsitting)-1
+    [Co_Matrix,P]=corrcoef(Sample);      %按相关性计算公式
+    Co_Matrix=tril(Co_Matrix,-1);    %只保留下三角的相关性矩阵
+    Co_Matrix((Co_Matrix(:)==0))=1;   %所有是零的分量全部置为1
+    Co_Matrix(isnan(Co_Matrix(:))==1)=1;
+    [idx,idy]=find(Co_Matrix==min(min(Co_Matrix)));  %对应的需要聚类的两个坐标编号,这里的idx与idy是从小到大的向量排序的
+    Z(i,1)=min([idx,idy]);Z(i,2)=max([idx,idy]);Z(i,3)=1/max(max(Co_Matrix)); %对应三种连接关系,注意如果以相关性较强的电场合体，则需要把层次聚类的电场值设为1/相关性
+    Sample=[Sample,sum(Sample(:,[idx,idy]),2)];  %扩展一维
+    Sample(:,[idx,idy])=1; %清除原来的向量
+end
+
+dendrogram(Z);
+T=cluster(Z,'maxclust',maxcluster);  %只保留到maxcluster个
+Tstar=cell(max(T),1); %判断哪些编号属于一个组合
+PowerClass=[]; CappClass=[];
+for i=1:max(T)
+    Tstar{i}=farmsitting((T==i));  %将编号融入一个组合内
+    PowerClass=[PowerClass,sum(Power(:,Tstar{i}),2)];
+    CappClass=[CappClass;sum(capp(Tstar{i}))];  %分别计算已经划分好子集群的功率和与容量和
+end
+
+farmCluster=1:max(T);  %新的子集群的编号
+
+B=ff2n(length(farmCluster));
+[m n]=find(B'==1);    %find 对于矩阵是按列进行计算的，m和n分别表示对应的行列
+WPC=cell(2^length(farmCluster)-1,1); % 出除空集的情况，包括全部集的情况 2^n
+for i=2:2^length(farmCluster)
+    D=find(n==i);  %第i个子集中的非零元素
+    WPC{i-1}=(farmCluster(m(D)));  %所有对应的风电场编号融入风电集群编号中WPC
+end
+
+farmCluster1=length(farmCluster):-1:1;
+WPCS=cell(2^length(farmCluster)-1,1); % 出除空集的情况，包括全部集的情况 ,按照风电场从前到后排列
+for i=2:2^length(farmCluster1)
+    D=find(n==i);  %第i个子集中的非零元素
+    WPCS{i-1}=(farmCluster1(m(D)));  %所有对应的风电场编号融入风电集群编号中WPC
+end
+
+
+
+%% 计算结果存放
+MaxPower=zeros(2^length(farmCluster)-1,1);       %记录每一个子序列的最大值
+SVMModel=cell(16,2^length(farmCluster)-1);  %SVMModel是记录多个预测模型对应的结构
+
+for group=1:2^length(farmCluster)-1
+    farm=WPC {group};  %选入的编号
+    dataset=sum(PowerClass(:,farm),2);
+%    MaxPower(group)=max(dataset);   %记录最大值
+
+    [scaler_data,ps_data]=mapminmax(dataset(time_train)',0,1);   %归一化到[0,1],mapminmax(x)只能进行行归一，所以x进行了转制
+    scaler_data=scaler_data'; 
+    
+    %划分输入组和输出期望值
+    [scaler_trainX,scaler_trainY]=Divide(dataset,time_train,lookback,ps_data);
+  %% 选取训练组、测试组（可随机，待数据组合好之后  ，见下面）
+    trainY_scalerPre=zeros(16,size(scaler_trainX,2)); %记录每个时间尺度每个样本下的预测结果
+    Model=cell(16,1);
+    for steps=1:16
+        Mdl = fitrsvm(scaler_trainX',scaler_trainY(steps,:)','Standardize',true,'KernelFunction','rbf');
+        Model{steps}=Mdl;
+        SVMModel{steps,group}=Mdl;
+        trainY_scalerPre(steps,:)= predict(Mdl,scaler_trainX');  %新版本需要后面加一个‘-b 0’表示输出,而且输出要加三个参数
+    end
+    %% 数据整理测试
+    trainY_pre=mapminmax('reverse',trainY_scalerPre,ps_data);
+    trainY_real=mapminmax('reverse',scaler_trainY,ps_data);
+    errTrain=trainY_real-trainY_pre;
+    trainScore=sqrt(sum(sum(errTrain.^2))/numel(errTrain));    %均方根误差
+   
+    imf_train=trainY_pre;
+    trainreal=trainY_real;
+    
+    trainY_prediction{group}= imf_train;
+    err_train=trainreal-imf_train;
+
+%%     总的结果  训练结果
+        trainNum   =numel(err_train);
+        
+        trainResult.train_RMSE =sqrt(sum(sum(err_train.^2))/trainNum)/sum(CappClass(farm)) ;
+        trainResult.train_MAE  =sum(sum(abs(err_train)))/trainNum;
+        trainResult.train_MAPE =sum(sum(abs(err_train./sum(CappClass(farm)))))/trainNum;     
+              
+%%      分项结果
+        for i=1:size(err_train,1)
+            ChildtrainNum   =size(err_train,2);
+            
+            Ch_trainResult.RMSE(i) =sqrt(sum(err_train(i,:).^2)/ChildtrainNum)/sum(CappClass(farm));
+            Ch_trainResult.MAE(i)  =sum(abs(err_train(i,:)))/ChildtrainNum;
+            Ch_trainResult.MAPE(i) =sum(abs(err_train(i,:))./sum(CappClass(farm)))/ChildtrainNum;
+            Ch_trainResult.MSE(i)  =sum(sum(err_train(i,:).^2))/ChildtrainNum; 
+        end      
+end
+%% 比较不同风电场组合下的整体风电集群的最大值
+    [scaler_trainX,trainreal]=Divide(sum(PowerClass,2),time_train,lookback);
+    timematrix=toc;    
+    fprintf('%d sub-regions are considered and use  %f s \n',2^(maxcluster)-1,timematrix);
+    save('TCDPF_TrainedReuslt.mat','SVMModel','Tstar','ps_data','maxcluster','lookback')
+    
+end
+
