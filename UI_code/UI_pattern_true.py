@@ -10,7 +10,8 @@ import sys
 import base64
 import matlab
 import pickle
-import matlab.engine
+import TCDPF_train
+import libTCDPF_test
 import pandas as pd
 import numpy as np
 import scipy.io as scio
@@ -297,14 +298,15 @@ class Ui_MainWindow_pattern_true(object):
         wind_power_train = df_wind_power.loc[train_start:train_end]
         wind_train_matlab = matlab.double(np.array(wind_power_train).tolist())
 
-        engine = matlab.engine.start_matlab()
-        engine.addpath(r'/Users/mayuan/Downloads/projects/UI_design_test/matlab_code', nargout=0)
-        engine.addpath(r'/Users/mayuan/Downloads/projects/UI_design_test/matlab_data', nargout=0)
+        # engine = matlab.engine.start_matlab()
+        # engine.addpath(r'C:/Users/Camille/PycharmProjects/UI_design_test/matlab_code', nargout=0)
+        # engine.addpath(r'C:/Users/Camille/PycharmProjects/UI_design_test/matlab_data', nargout=0)
 
         cluster, lag = 4, 5  # 分别设置聚类个数和延迟值
-
-        trainResult, Ch_trainResult = engine.TCDPF_train(
+        a = TCDPF_train.initialize()
+        trainResult, Ch_trainResult = a.TCDPF_train(
             wind_train_matlab, cappseries, cluster, lag, nargout=2)  # 第一个是训练功率数据，第二个是场站容量，第三个是选择的聚类个数，第四个是超前步数
+        a.terminate()
 
         # test
         K = 10
@@ -315,14 +317,16 @@ class Ui_MainWindow_pattern_true(object):
 
         print(wind_power_test.shape)
 
-        Better_Pred, Mfarm_Pred_Better, Ch_test_Better, Better_code, Mfarm_Partition = engine.TCDPF_test(
+        b = libTCDPF_test.initialize()
+        Better_Pred, Mfarm_Pred_Better, Ch_test_Better, Better_code, Mfarm_Partition = b.TCDPF_test(
             wind_test_matlab, cappseries, 10, nargout=5)  # 第一个是训练功率数据，第二个是场站容量，第三个是持续时间(K)
+        b.terminate()
 
         # result
         result = (np.array(Better_code).reshape(-1) - 1).astype(int)
         time_horizen = 1
 
-        f = open('/Users/mayuan/Downloads/projects/UI_design_test/points.txt', 'rb')
+        f = open('points.txt', 'rb')
         points = pickle.load(f)
         f.close()
 

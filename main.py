@@ -11,6 +11,7 @@ from UI_code.UI_forecast import *
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from PyQt5.QtGui import QFont
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ["DEBUSSY"] = "1"
 
 class MyWindow(QMainWindow, Ui_MainWindow):
